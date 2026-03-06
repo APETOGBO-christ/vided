@@ -77,6 +77,7 @@ async function assembleHlsToMp4(payload) {
 
   emitHlsProgress(jobId, 8, `Téléchargement ${segments.length} segments...`);
 
+  const ffmpeg = await loadFFmpeg();
   const files = [];
   let totalBytes = 0;
 
@@ -103,8 +104,6 @@ async function assembleHlsToMp4(payload) {
   }
 
   emitHlsProgress(jobId, 85, "Remuxage en MP4...");
-
-  const ffmpeg = await loadFFmpeg();
 
   // Args de base
   let execArgs = [
@@ -251,14 +250,6 @@ async function decryptAndDownloadHLS(payload) {
   ffmpeg.unlink(filename);
 
   return { ok: true, size: blob.size };
-}
-
-// Ajoute au listener onMessage
-if (message.type === "decrypt-hls-with-key") {
-  decryptAndDownloadHLS(message)
-    .then((r) => sendResponse({ ok: true, result: r }))
-    .catch((err) => sendResponse({ ok: false, error: err.message }));
-  return true;
 }
 
 function absoluteUrl(rawUrl) {
@@ -905,6 +896,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       filename:
         (message.filename || "video_complet").replace(/\.[^/.]+$/, "") + ".mp4",
     })
+      .then((r) => sendResponse({ ok: true, result: r }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "decrypt-hls-with-key") {
+    decryptAndDownloadHLS(message)
       .then((r) => sendResponse({ ok: true, result: r }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
