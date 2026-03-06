@@ -17,16 +17,43 @@ const VIDEO_FILE_EXTENSIONS = new Set([
 
 let ffmpeg = null;
 
+async function assertNonEmptyAsset(url, label) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`FFmpeg asset introuvable (${label}): HTTP ${response.status}`);
+  }
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength) {
+    throw new Error(`FFmpeg asset vide (${label}). Reinstalle l'extension avec les fichiers ffmpeg complets.`);
+  }
+}
+
 async function loadFFmpeg() {
   if (ffmpeg) return ffmpeg;
 
-  const { FFmpeg } = await import(chrome.runtime.getURL("ffmpeg-core.js"));
-  ffmpeg = new FFmpeg();
+  const moduleUrl = chrome.runtime.getURL("ffmpeg-core.js");
+  const wasmUrl = chrome.runtime.getURL("ffmpeg-core.wasm");
+  const workerUrl = chrome.runtime.getURL("ffmpeg-core.worker.js");
+
+  await assertNonEmptyAsset(moduleUrl, "ffmpeg-core.js");
+  await assertNonEmptyAsset(wasmUrl, "ffmpeg-core.wasm");
+  await assertNonEmptyAsset(workerUrl, "ffmpeg-core.worker.js");
+
+  const module = await import(moduleUrl);
+  const FFmpegCtor = module?.FFmpeg || module?.default?.FFmpeg;
+
+  if (typeof FFmpegCtor !== "function") {
+    throw new Error(
+      "Bibliothèque FFmpeg incompatible: export FFmpeg introuvable dans ffmpeg-core.js.",
+    );
+  }
+
+  ffmpeg = new FFmpegCtor();
 
   await ffmpeg.load({
-    coreURL: chrome.runtime.getURL("ffmpeg-core.js"),
-    wasmURL: chrome.runtime.getURL("ffmpeg-core.wasm"),
-    workerURL: chrome.runtime.getURL("ffmpeg-core.worker.js"),
+    coreURL: moduleUrl,
+    wasmURL: wasmUrl,
+    workerURL: workerUrl,
   });
 
   console.log("[FFmpeg.wasm] Loaded");

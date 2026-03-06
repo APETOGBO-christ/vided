@@ -144,8 +144,11 @@ async function startDownloadJob(candidate, selectedVariantUrl = "") {
 
     if (!response?.ok) {
       const errMsg = response?.error || "Erreur inconnue (vérifie console)";
-      console.error("=== ERREUR MP4 ===", errMsg); // ← ça va t’afficher le vrai problème
-      setStatus("Échec MP4 : " + errMsg, true);
+      console.error("=== ERREUR MP4 ===", errMsg);
+      const hint = errMsg.includes("FFmpeg asset")
+        ? " Vérifie que ffmpeg-core.js/.wasm/.worker.js ne sont pas vides puis recharge l'extension."
+        : "";
+      setStatus("Échec MP4 : " + errMsg + hint, true);
       return false;
     }
 
