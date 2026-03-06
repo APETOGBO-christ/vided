@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Vided</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>Vided</h1>
+        <p id="pageLabel" class="muted">Aucun onglet actif</p>
+      </header>
+
+      <section class="controls">
+        <button id="rescanBtn" class="btn secondary">Rescanner</button>
+        <button id="downloadAllBtn" class="btn primary">
+          Telecharger tout
+        </button>
+      </section>
+
+      <section
+        class="drm-section"
+        style="
+          margin-top: 16px;
+          padding: 12px;
+          background: #1a2b4c;
+          border-radius: 10px;
+          color: #fff;
+        "
+      >
+        <h3 style="margin: 0 0 8px; font-size: 14px">
+          DRM God Mode (Widevine L3)
+        </h3>
+        <button
+          id="activateDrmBtn"
+          class="btn primary"
+          style="width: 100%; margin-bottom: 10px"
+        >
+          Activer God Mode sur cet onglet
+        </button>
+        <p
+          id="drmStatus"
+          class="muted"
+          style="font-size: 12px; margin: 0 0 8px"
+        >
+          Aucune clé détectée pour l'instant
+        </p>
+        <ul
+          id="keysList"
+          class="list"
+          style="max-height: 180px; overflow: auto"
+        ></ul>
+        <button
+          id="decryptBtn"
+          class="btn primary"
+          style="width: 100%; margin-top: 10px; display: none"
+        >
+          Décrypter & Télécharger sélectionné
+        </button>
+      </section>
+
+      <section class="optionsGrid">
+        <label class="option">
+          <span>Mode HLS</span>
+          <select id="hlsModeSelect">
+            <option value="assemble">Assembler segments</option>
+            <option value="manifest">Telecharger manifest</option>
+          </select>
+        </label>
+
+        <label class="option saveAsToggle">
+          <input id="saveAsToggle" type="checkbox" />
+          Demander le chemin
+        </label>
+      </section>
+
+      <p id="status" class="status"></p>
+      <ul id="candidateList" class="list"></ul>
+
+      <section class="jobsSection">
+        <div class="jobsHead">
+          <h2>Jobs</h2>
+          <div class="jobsActions">
+            <button id="refreshJobsBtn" class="btn tiny ghost">
+              Actualiser
+            </button>
+            <button id="clearJobsBtn" class="btn tiny ghost">Nettoyer</button>
+          </div>
+        </div>
+        <p id="jobsMeta" class="muted"></p>
+        <ul id="jobList" class="jobList"></ul>
+      </section>
+    </main>
+
+    <template id="itemTemplate">
+      <li class="item">
+        <div class="itemHead">
+          <span class="kind"></span>
+          <span class="source"></span>
+        </div>
+        <p class="url"></p>
+        <p class="meta"></p>
+        <div class="actions">
+          <button class="btn small downloadBtn">Telecharger</button>
+          <button class="btn small ghost analyzeBtn">Analyser HLS</button>
+          <button class="btn small ghost copyBtn">Copier URL</button>
+        </div>
+        <ul class="variantList"></ul>
+      </li>
+    </template>
+
+    <template id="jobTemplate">
+      <li class="jobItem">
+        <div class="jobHead">
+          <span class="jobStatus"></span>
+          <span class="jobMode"></span>
+        </div>
+        <p class="jobTitle"></p>
+        <p class="jobInfo"></p>
+        <div class="progressWrap">
+          <span class="progressFill"></span>
+        </div>
+      </li>
+    </template>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

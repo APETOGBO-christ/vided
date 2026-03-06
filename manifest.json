@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Vided - Video Downloader [DRM God Mode]",
+  "description": "Téléchargement vidéo + contournement Widevine L3 (local only)",
+  "version": "1.2.0",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "tabs",
+    "webRequest",
+    "debugger",
+    "scripting",
+    "declarativeNetRequest",
+    "storage"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Vided DRM God",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected.js",
+        "widevine_hijacker.js",
+        "ffmpeg-core.js",
+        "ffmpeg-core.wasm",
+        "ffmpeg-core.worker.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "minimum_chrome_version": "120"
+}
