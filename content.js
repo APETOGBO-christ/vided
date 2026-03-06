@@ -17,20 +17,51 @@ const VIDEO_FILE_EXTENSIONS = new Set([
 
 let ffmpeg = null;
 
+async function assertNonEmptyAsset(url, label) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`FFmpeg asset introuvable (${label}): HTTP ${response.status}`);
+  }
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength) {
+    throw new Error(`FFmpeg asset vide (${label}). Reinstalle l'extension avec les fichiers ffmpeg complets.`);
+  }
+}
+
 async function loadFFmpeg() {
   if (ffmpeg) return ffmpeg;
 
-  const { FFmpeg } = await import(chrome.runtime.getURL("ffmpeg-core.js"));
-  ffmpeg = new FFmpeg();
+  const moduleUrl = chrome.runtime.getURL("ffmpeg-core.js");
+  const wasmUrl = chrome.runtime.getURL("ffmpeg-core.wasm");
+  const workerUrl = chrome.runtime.getURL("ffmpeg-core.worker.js");
+
+  await assertNonEmptyAsset(moduleUrl, "ffmpeg-core.js");
+  await assertNonEmptyAsset(wasmUrl, "ffmpeg-core.wasm");
+  await assertNonEmptyAsset(workerUrl, "ffmpeg-core.worker.js");
+
+  const module = await import(moduleUrl);
+  const FFmpegCtor = module?.FFmpeg || module?.default?.FFmpeg;
+
+  if (typeof FFmpegCtor !== "function") {
+    throw new Error(
+      "Bibliothèque FFmpeg incompatible: export FFmpeg introuvable dans ffmpeg-core.js.",
+    );
+  }
+
+  ffmpeg = new FFmpegCtor();
 
   await ffmpeg.load({
-    coreURL: chrome.runtime.getURL("ffmpeg-core.js"),
-    wasmURL: chrome.runtime.getURL("ffmpeg-core.wasm"),
-    workerURL: chrome.runtime.getURL("ffmpeg-core.worker.js"),
+    coreURL: moduleUrl,
+    wasmURL: wasmUrl,
+    workerURL: workerUrl,
   });
 
   console.log("[FFmpeg.wasm] Loaded");
   return ffmpeg;
+}
+
+function buildConcatListFileContent(files) {
+  return files.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n");
 }
 
 // Fonction unifiée : assemble HLS → MP4 (avec ou sans décryptage)
@@ -77,6 +108,7 @@ async function assembleHlsToMp4(payload) {
 
   emitHlsProgress(jobId, 8, `Téléchargement ${segments.length} segments...`);
 
+  const ffmpeg = await loadFFmpeg();
   const files = [];
   let totalBytes = 0;
 
@@ -104,12 +136,20 @@ async function assembleHlsToMp4(payload) {
 
   emitHlsProgress(jobId, 85, "Remuxage en MP4...");
 
-  const ffmpeg = await loadFFmpeg();
+  const concatListFilename = "segments.txt";
+  await ffmpeg.writeFile(
+    concatListFilename,
+    new TextEncoder().encode(buildConcatListFileContent(files)),
+  );
 
   // Args de base
   let execArgs = [
+    "-f",
+    "concat",
+    "-safe",
+    "0",
     "-i",
-    `concat:${files.map((f) => `file '${f}'`).join("|")}`,
+    concatListFilename,
     "-c:v",
     "copy",
     "-c:a",
@@ -146,9 +186,79 @@ async function assembleHlsToMp4(payload) {
 
   // Nettoyage FS
   files.forEach((f) => ffmpeg.unlink(f));
+  ffmpeg.unlink(concatListFilename);
   ffmpeg.unlink(filename);
 
   return { ok: true, size: blob.size, encrypted: !!keyInfo };
+}
+
+async function fallbackAssembleHlsToTs(payload) {
+  const {
+    jobId,
+    manifestUrl,
+    selectedVariantUrl = "",
+    filename = "video_fallback.ts",
+  } = payload;
+
+  emitHlsProgress(jobId, 4, "Mode secours: assemblage TS sans FFmpeg...");
+
+  const manifestText = await fetchTextFromPage(manifestUrl);
+  const manifest = parseHlsManifest(manifestUrl, manifestText);
+  const mediaUrl =
+    selectedVariantUrl ||
+    (manifest.isMaster ? manifest.variants?.[0]?.url : manifestUrl);
+
+  if (!mediaUrl) throw new Error("Aucune playlist média trouvée");
+
+  const mediaText = manifest.isMaster
+    ? await fetchTextFromPage(mediaUrl)
+    : manifestText;
+  const mediaManifest = manifest.isMaster
+    ? parseHlsManifest(mediaUrl, mediaText)
+    : manifest;
+
+  const segments = [
+    ...(mediaManifest.initSegmentUrl ? [mediaManifest.initSegmentUrl] : []),
+    ...mediaManifest.segments,
+  ];
+
+  if (!segments.length) throw new Error("Aucun segment");
+
+  const chunks = [];
+  let totalBytes = 0;
+
+  for (let i = 0; i < segments.length; i++) {
+    const chunk = await fetchArrayBufferWithRetry(segments[i], 3);
+    chunks.push(new Uint8Array(chunk));
+    totalBytes += chunk.byteLength;
+
+    if (i % 15 === 0 || i === segments.length - 1) {
+      emitHlsProgress(
+        jobId,
+        10 + Math.round((80 * i) / segments.length),
+        `${i + 1}/${segments.length} segments (mode TS secours)`,
+      );
+    }
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  const outputName = filename.replace(/\.[^/.]+$/, "") + ".ts";
+  const blob = new Blob([merged.buffer], { type: "video/mp2t" });
+  triggerBlobDownload(blob, outputName);
+  emitHlsProgress(jobId, 100, "Export TS terminé (FFmpeg indisponible)");
+
+  return {
+    ok: true,
+    size: blob.size,
+    format: "ts",
+    warning: "FFmpeg indisponible, export TS utilisé",
+  };
 }
 
 // Nouvelle fonction : decrypt HLS avec clearkey (appelée depuis popup ou background)
@@ -198,21 +308,6 @@ async function decryptAndDownloadHLS(payload) {
 
   // 2. Mount files in FS & decrypt avec clé
   const keyHex = keyInfo.key.replace(/^0x/, ""); // clean hex
-  const kidHex = keyInfo.kid.replace(/^0x/, "");
-
-  // ffmpeg decrypt HLS avec clé (CENC Widevine -> clearkey format)
-  const decryptArgs = [
-    "-decryption_key",
-    keyHex,
-    "-i",
-    manifestUrl, // ffmpeg peut fetch direct si CORS ok
-    "-c",
-    "copy",
-    "-bsf:a",
-    "aac_adtstoasc",
-    filename,
-  ];
-
   // Mais pour full control (et éviter CORS sur segments) on fetch manuellement
   // Version manuelle : fetch chaque segment, write to FS, puis ffmpeg decrypt
 
@@ -228,9 +323,19 @@ async function decryptAndDownloadHLS(payload) {
   emitHlsProgress(jobId, 60, "Décryptage en cours...");
 
   // ffmpeg decrypt CENC (widevine clearkey mode)
+  const concatListFilename = "segments_decrypt.txt";
+  await ffmpeg.writeFile(
+    concatListFilename,
+    new TextEncoder().encode(buildConcatListFileContent(files)),
+  );
+
   await ffmpeg.exec([
+    "-f",
+    "concat",
+    "-safe",
+    "0",
     "-i",
-    `concat:${files.map((f) => `file '${f}'`).join("|")}`,
+    concatListFilename,
     "-c",
     "copy",
     "-encryption_scheme",
@@ -248,17 +353,10 @@ async function decryptAndDownloadHLS(payload) {
 
   // Cleanup
   files.forEach((f) => ffmpeg.unlink(f));
+  ffmpeg.unlink(concatListFilename);
   ffmpeg.unlink(filename);
 
   return { ok: true, size: blob.size };
-}
-
-// Ajoute au listener onMessage
-if (message.type === "decrypt-hls-with-key") {
-  decryptAndDownloadHLS(message)
-    .then((r) => sendResponse({ ok: true, result: r }))
-    .catch((err) => sendResponse({ ok: false, error: err.message }));
-  return true;
 }
 
 function absoluteUrl(rawUrl) {
@@ -897,14 +995,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "downloadHlsFromPage") {
     // On force TOUJOURS le remux MP4 avec la fonction unifiée
-    assembleHlsToMp4({
+    const payload = {
       jobId: message.jobId,
       manifestUrl: message.manifestUrl,
       selectedVariantUrl: message.selectedVariantUrl || "",
       keyInfo: message.keyInfo || null, // si tu as une clé depuis God Mode
       filename:
         (message.filename || "video_complet").replace(/\.[^/.]+$/, "") + ".mp4",
-    })
+    };
+
+    assembleHlsToMp4(payload)
+      .then((r) => sendResponse({ ok: true, result: r }))
+      .catch(async (err) => {
+        if (err?.message?.includes("FFmpeg asset")) {
+          try {
+            const fallback = await fallbackAssembleHlsToTs(payload);
+            sendResponse({ ok: true, result: fallback });
+            return;
+          } catch (fallbackError) {
+            sendResponse({ ok: false, error: fallbackError.message });
+            return;
+          }
+        }
+        sendResponse({ ok: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === "decrypt-hls-with-key") {
+    decryptAndDownloadHLS(message)
       .then((r) => sendResponse({ ok: true, result: r }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

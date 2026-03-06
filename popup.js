@@ -47,6 +47,23 @@ function sanitizeFilename(title) {
     .slice(0, 100);
 }
 
+
+function inferExtensionFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/);
+    return match?.[1]?.toLowerCase() || "mp4";
+  } catch {
+    return "mp4";
+  }
+}
+
+function buildCandidateFilename(candidate) {
+  const base = sanitizeFilename(candidate.pageTitle || "video");
+  const ext = inferExtensionFromUrl(candidate.url);
+  return `${base}.${ext}`;
+}
+
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
@@ -59,6 +76,22 @@ function normalizeUrl(url) {
 
 function send(message) {
   return chrome.runtime.sendMessage(message);
+}
+
+async function sendToActiveTab(message) {
+  if (!activeTab?.id) {
+    return { ok: false, error: "Onglet actif introuvable." };
+  }
+  try {
+    return await chrome.tabs.sendMessage(activeTab.id, message);
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error?.message ||
+        "Impossible de contacter le script de la page. Recharge la page et réessaie.",
+    };
+  }
 }
 
 function saveSettings() {
@@ -115,7 +148,7 @@ async function startDownloadJob(candidate, selectedVariantUrl = "") {
   }
 
   if (candidate.kind === "hls") {
-    const response = await send({
+    const response = await sendToActiveTab({
       type: "downloadHlsFromPage",
       jobId: Date.now(),
       manifestUrl: candidate.url,
@@ -128,17 +161,39 @@ async function startDownloadJob(candidate, selectedVariantUrl = "") {
 
     if (!response?.ok) {
       const errMsg = response?.error || "Erreur inconnue (vérifie console)";
-      console.error("=== ERREUR MP4 ===", errMsg); // ← ça va t’afficher le vrai problème
-      setStatus("Échec MP4 : " + errMsg, true);
+      console.error("=== ERREUR MP4 ===", errMsg);
+      const hint = errMsg.includes("FFmpeg asset")
+        ? " Vérifie que ffmpeg-core.js/.wasm/.worker.js ne sont pas vides puis recharge l'extension."
+        : "";
+      setStatus("Échec MP4 : " + errMsg + hint, true);
       return false;
     }
 
-    setStatus(`MP4 en création... (vérifie les téléchargements)`);
+    if (response?.result?.format === "ts") {
+      setStatus("FFmpeg indisponible: export TS de secours lancé.", true);
+    } else {
+      setStatus(`MP4 en création... (vérifie les téléchargements)`);
+    }
     scheduleJobsRefresh();
     return true;
   }
 
-  // Pour les autres types (mp4 direct, etc.)
+  // Pour les liens vidéo directs, on tente d'abord un téléchargement côté page
+  // (utile pour URLs signées/anti-hotlink qui échouent via chrome.downloads).
+  if (candidate.kind === "file") {
+    const pageResponse = await sendToActiveTab({
+      type: "downloadBlobFromPage",
+      url: candidate.url,
+      filename: buildCandidateFilename(candidate),
+    });
+
+    if (pageResponse?.ok) {
+      setStatus("Téléchargement lancé depuis la page.");
+      return true;
+    }
+  }
+
+  // Fallback: pipeline de jobs background (blob, dash, ou direct classique)
   const mode = getModeForCandidate(candidate);
   const response = await send({
     type: "startDownloadJob",
@@ -637,7 +692,7 @@ decryptBtn.addEventListener("click", async () => {
 
   setStatus("Décryptage + MP4 en cours...");
 
-  const response = await send({
+  const response = await sendToActiveTab({
     type: "downloadHlsFromPage", // ← même flux que le téléchargement normal
     jobId: Date.now(),
     manifestUrl: hlsCandidate.url,
@@ -645,8 +700,12 @@ decryptBtn.addEventListener("click", async () => {
     filename: `decrypted_${Date.now()}.mp4`,
   });
 
-  if (response.ok) {
-    setStatus(`Décrypté et converti en MP4 !`);
+  if (response?.ok) {
+    if (response?.result?.format === "ts") {
+      setStatus("Décryptage impossible en MP4: export TS de secours effectué.", true);
+    } else {
+      setStatus(`Décrypté et converti en MP4 !`);
+    }
   } else {
     setStatus("Erreur : " + (response.error || "inconnue"), true);
   }

@@ -32,7 +32,7 @@ Extension Chrome/Edge (Manifest V3) pour detecter et telecharger des videos non 
 - Pas de contournement DRM (Widevine/FairPlay/PlayReady).
 - HLS chiffre (`#EXT-X-KEY` avec methode differente de `NONE`) est explicitement bloque.
 - L'assemblage HLS est en memoire (peut etre limite sur playlists tres longues).
-- Le fichier assemble HLS est exporte en flux TS (pas de remux MP4 automatique).
+- Le mode `Assembler segments` remuxe les segments HLS en MP4 via ffmpeg.wasm (selon compatibilite des codecs).
 - DASH est detecte mais telecharge comme manifeste (`.mpd`) en mode direct.
 - Certains sites peuvent bloquer ou expirer rapidement les URLs signees.
 
