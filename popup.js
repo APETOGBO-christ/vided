@@ -61,6 +61,22 @@ function send(message) {
   return chrome.runtime.sendMessage(message);
 }
 
+async function sendToActiveTab(message) {
+  if (!activeTab?.id) {
+    return { ok: false, error: "Onglet actif introuvable." };
+  }
+  try {
+    return await chrome.tabs.sendMessage(activeTab.id, message);
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error?.message ||
+        "Impossible de contacter le script de la page. Recharge la page et réessaie.",
+    };
+  }
+}
+
 function saveSettings() {
   const payload = {
     saveAs: Boolean(saveAsToggleEl.checked),
@@ -115,7 +131,7 @@ async function startDownloadJob(candidate, selectedVariantUrl = "") {
   }
 
   if (candidate.kind === "hls") {
-    const response = await send({
+    const response = await sendToActiveTab({
       type: "downloadHlsFromPage",
       jobId: Date.now(),
       manifestUrl: candidate.url,
@@ -637,7 +653,7 @@ decryptBtn.addEventListener("click", async () => {
 
   setStatus("Décryptage + MP4 en cours...");
 
-  const response = await send({
+  const response = await sendToActiveTab({
     type: "downloadHlsFromPage", // ← même flux que le téléchargement normal
     jobId: Date.now(),
     manifestUrl: hlsCandidate.url,
@@ -645,7 +661,7 @@ decryptBtn.addEventListener("click", async () => {
     filename: `decrypted_${Date.now()}.mp4`,
   });
 
-  if (response.ok) {
+  if (response?.ok) {
     setStatus(`Décrypté et converti en MP4 !`);
   } else {
     setStatus("Erreur : " + (response.error || "inconnue"), true);

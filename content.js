@@ -33,6 +33,10 @@ async function loadFFmpeg() {
   return ffmpeg;
 }
 
+function buildConcatListFileContent(files) {
+  return files.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n");
+}
+
 // Fonction unifiée : assemble HLS → MP4 (avec ou sans décryptage)
 async function assembleHlsToMp4(payload) {
   const {
@@ -105,10 +109,20 @@ async function assembleHlsToMp4(payload) {
 
   emitHlsProgress(jobId, 85, "Remuxage en MP4...");
 
+  const concatListFilename = "segments.txt";
+  await ffmpeg.writeFile(
+    concatListFilename,
+    new TextEncoder().encode(buildConcatListFileContent(files)),
+  );
+
   // Args de base
   let execArgs = [
+    "-f",
+    "concat",
+    "-safe",
+    "0",
     "-i",
-    `concat:${files.map((f) => `file '${f}'`).join("|")}`,
+    concatListFilename,
     "-c:v",
     "copy",
     "-c:a",
@@ -145,6 +159,7 @@ async function assembleHlsToMp4(payload) {
 
   // Nettoyage FS
   files.forEach((f) => ffmpeg.unlink(f));
+  ffmpeg.unlink(concatListFilename);
   ffmpeg.unlink(filename);
 
   return { ok: true, size: blob.size, encrypted: !!keyInfo };
@@ -197,21 +212,6 @@ async function decryptAndDownloadHLS(payload) {
 
   // 2. Mount files in FS & decrypt avec clé
   const keyHex = keyInfo.key.replace(/^0x/, ""); // clean hex
-  const kidHex = keyInfo.kid.replace(/^0x/, "");
-
-  // ffmpeg decrypt HLS avec clé (CENC Widevine -> clearkey format)
-  const decryptArgs = [
-    "-decryption_key",
-    keyHex,
-    "-i",
-    manifestUrl, // ffmpeg peut fetch direct si CORS ok
-    "-c",
-    "copy",
-    "-bsf:a",
-    "aac_adtstoasc",
-    filename,
-  ];
-
   // Mais pour full control (et éviter CORS sur segments) on fetch manuellement
   // Version manuelle : fetch chaque segment, write to FS, puis ffmpeg decrypt
 
@@ -227,9 +227,19 @@ async function decryptAndDownloadHLS(payload) {
   emitHlsProgress(jobId, 60, "Décryptage en cours...");
 
   // ffmpeg decrypt CENC (widevine clearkey mode)
+  const concatListFilename = "segments_decrypt.txt";
+  await ffmpeg.writeFile(
+    concatListFilename,
+    new TextEncoder().encode(buildConcatListFileContent(files)),
+  );
+
   await ffmpeg.exec([
+    "-f",
+    "concat",
+    "-safe",
+    "0",
     "-i",
-    `concat:${files.map((f) => `file '${f}'`).join("|")}`,
+    concatListFilename,
     "-c",
     "copy",
     "-encryption_scheme",
@@ -247,6 +257,7 @@ async function decryptAndDownloadHLS(payload) {
 
   // Cleanup
   files.forEach((f) => ffmpeg.unlink(f));
+  ffmpeg.unlink(concatListFilename);
   ffmpeg.unlink(filename);
 
   return { ok: true, size: blob.size };
