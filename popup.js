@@ -47,6 +47,23 @@ function sanitizeFilename(title) {
     .slice(0, 100);
 }
 
+
+function inferExtensionFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/);
+    return match?.[1]?.toLowerCase() || "mp4";
+  } catch {
+    return "mp4";
+  }
+}
+
+function buildCandidateFilename(candidate) {
+  const base = sanitizeFilename(candidate.pageTitle || "video");
+  const ext = inferExtensionFromUrl(candidate.url);
+  return `${base}.${ext}`;
+}
+
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
@@ -161,7 +178,22 @@ async function startDownloadJob(candidate, selectedVariantUrl = "") {
     return true;
   }
 
-  // Pour les autres types (mp4 direct, etc.)
+  // Pour les liens vidéo directs, on tente d'abord un téléchargement côté page
+  // (utile pour URLs signées/anti-hotlink qui échouent via chrome.downloads).
+  if (candidate.kind === "file") {
+    const pageResponse = await sendToActiveTab({
+      type: "downloadBlobFromPage",
+      url: candidate.url,
+      filename: buildCandidateFilename(candidate),
+    });
+
+    if (pageResponse?.ok) {
+      setStatus("Téléchargement lancé depuis la page.");
+      return true;
+    }
+  }
+
+  // Fallback: pipeline de jobs background (blob, dash, ou direct classique)
   const mode = getModeForCandidate(candidate);
   const response = await send({
     type: "startDownloadJob",
