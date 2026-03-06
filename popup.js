@@ -152,7 +152,11 @@ async function startDownloadJob(candidate, selectedVariantUrl = "") {
       return false;
     }
 
-    setStatus(`MP4 en création... (vérifie les téléchargements)`);
+    if (response?.result?.format === "ts") {
+      setStatus("FFmpeg indisponible: export TS de secours lancé.", true);
+    } else {
+      setStatus(`MP4 en création... (vérifie les téléchargements)`);
+    }
     scheduleJobsRefresh();
     return true;
   }
@@ -665,7 +669,11 @@ decryptBtn.addEventListener("click", async () => {
   });
 
   if (response?.ok) {
-    setStatus(`Décrypté et converti en MP4 !`);
+    if (response?.result?.format === "ts") {
+      setStatus("Décryptage impossible en MP4: export TS de secours effectué.", true);
+    } else {
+      setStatus(`Décrypté et converti en MP4 !`);
+    }
   } else {
     setStatus("Erreur : " + (response.error || "inconnue"), true);
   }

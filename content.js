@@ -192,6 +192,75 @@ async function assembleHlsToMp4(payload) {
   return { ok: true, size: blob.size, encrypted: !!keyInfo };
 }
 
+async function fallbackAssembleHlsToTs(payload) {
+  const {
+    jobId,
+    manifestUrl,
+    selectedVariantUrl = "",
+    filename = "video_fallback.ts",
+  } = payload;
+
+  emitHlsProgress(jobId, 4, "Mode secours: assemblage TS sans FFmpeg...");
+
+  const manifestText = await fetchTextFromPage(manifestUrl);
+  const manifest = parseHlsManifest(manifestUrl, manifestText);
+  const mediaUrl =
+    selectedVariantUrl ||
+    (manifest.isMaster ? manifest.variants?.[0]?.url : manifestUrl);
+
+  if (!mediaUrl) throw new Error("Aucune playlist média trouvée");
+
+  const mediaText = manifest.isMaster
+    ? await fetchTextFromPage(mediaUrl)
+    : manifestText;
+  const mediaManifest = manifest.isMaster
+    ? parseHlsManifest(mediaUrl, mediaText)
+    : manifest;
+
+  const segments = [
+    ...(mediaManifest.initSegmentUrl ? [mediaManifest.initSegmentUrl] : []),
+    ...mediaManifest.segments,
+  ];
+
+  if (!segments.length) throw new Error("Aucun segment");
+
+  const chunks = [];
+  let totalBytes = 0;
+
+  for (let i = 0; i < segments.length; i++) {
+    const chunk = await fetchArrayBufferWithRetry(segments[i], 3);
+    chunks.push(new Uint8Array(chunk));
+    totalBytes += chunk.byteLength;
+
+    if (i % 15 === 0 || i === segments.length - 1) {
+      emitHlsProgress(
+        jobId,
+        10 + Math.round((80 * i) / segments.length),
+        `${i + 1}/${segments.length} segments (mode TS secours)`,
+      );
+    }
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  const outputName = filename.replace(/\.[^/.]+$/, "") + ".ts";
+  const blob = new Blob([merged.buffer], { type: "video/mp2t" });
+  triggerBlobDownload(blob, outputName);
+  emitHlsProgress(jobId, 100, "Export TS terminé (FFmpeg indisponible)");
+
+  return {
+    ok: true,
+    size: blob.size,
+    format: "ts",
+    warning: "FFmpeg indisponible, export TS utilisé",
+  };
+}
+
 // Nouvelle fonction : decrypt HLS avec clearkey (appelée depuis popup ou background)
 async function decryptAndDownloadHLS(payload) {
   const {
@@ -926,16 +995,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "downloadHlsFromPage") {
     // On force TOUJOURS le remux MP4 avec la fonction unifiée
-    assembleHlsToMp4({
+    const payload = {
       jobId: message.jobId,
       manifestUrl: message.manifestUrl,
       selectedVariantUrl: message.selectedVariantUrl || "",
       keyInfo: message.keyInfo || null, // si tu as une clé depuis God Mode
       filename:
         (message.filename || "video_complet").replace(/\.[^/.]+$/, "") + ".mp4",
-    })
+    };
+
+    assembleHlsToMp4(payload)
       .then((r) => sendResponse({ ok: true, result: r }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }));
+      .catch(async (err) => {
+        if (err?.message?.includes("FFmpeg asset")) {
+          try {
+            const fallback = await fallbackAssembleHlsToTs(payload);
+            sendResponse({ ok: true, result: fallback });
+            return;
+          } catch (fallbackError) {
+            sendResponse({ ok: false, error: fallbackError.message });
+            return;
+          }
+        }
+        sendResponse({ ok: false, error: err.message });
+      });
     return true;
   }
 
